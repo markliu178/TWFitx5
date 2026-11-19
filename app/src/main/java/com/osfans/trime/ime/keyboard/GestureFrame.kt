@@ -63,6 +63,8 @@ open class GestureFrame(context: Context) : FrameLayout(context) {
     var isRepeatable = false
     var isSlideCursor = false
     var isSlideDelete = false
+    var isSelectDelete = false
+    var slideStepScale = 1f
 
     var hasLongPress = false
     var hasDouble = false
@@ -118,7 +120,7 @@ open class GestureFrame(context: Context) : FrameLayout(context) {
 
                 onMove?.invoke(x, y, isLongPressed)
 
-                if ((isSlideCursor || isSlideDelete) && onSlide != null && !isLongPressed && swipeTravel > 0) {
+                if ((isSlideCursor || isSlideDelete || isSelectDelete) && onSlide != null && !isLongPressed && swipeTravel > 0) {
                     if (!slideActivated) {
                         if (abs(dx) >= swipeTravel) {
                             slideActivated = true
@@ -127,7 +129,7 @@ open class GestureFrame(context: Context) : FrameLayout(context) {
                     }
 
                     if (slideActivated) {
-                        val step = getNStep(lastX, x, slideStepSize.toFloat())
+                        val step = getNStep(lastX, x, slideStepSize * slideStepScale)
                         if (step != 0) {
                             onSlide?.invoke(step, x, y)
                             lastX = x
@@ -330,5 +332,28 @@ open class GestureFrame(context: Context) : FrameLayout(context) {
         private val vibrateOnKeyPress by AppPrefs.defaultInstance().keyboard.vibrateOnKeyPress
         private val vibrateOnKeyRelease by AppPrefs.defaultInstance().keyboard.vibrateOnKeyRelease
         private val vibrateOnKeyRepeat by AppPrefs.defaultInstance().keyboard.vibrateOnKeyRepeat
+    }
+}
+
+internal class SelectDeleteSession(
+    val composing: Boolean,
+) {
+    var anchor = -1
+    var current = -1
+    var started = false
+    var finished = false
+    var cancelled = false
+
+    fun initialize(anchor: Int) {
+        if (this.anchor >= 0) return
+        this.anchor = anchor.coerceAtLeast(0)
+        current = this.anchor
+    }
+
+    fun move(delta: Int): Int? {
+        val anchor = anchor.takeIf { it >= 0 } ?: return null
+        started = true
+        current = (current.toLong() + delta.toLong()).coerceIn(0L, anchor.toLong()).toInt()
+        return current
     }
 }

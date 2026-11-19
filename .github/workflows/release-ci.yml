@@ -10,30 +10,27 @@ on:
       - 'v*'
 env:
   CI_NAME: Release CI
+  # split only one ABI so the artifact stays small
+  BUILD_ABI: arm64-v8a
 jobs:
-  check:
-    uses: ./.github/workflows/check-ci.yml
-
   build:
-    needs: check
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
       - name: Setup Java
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: 25
-          # will restore cache of dependencies and wrappers
+          java-version: 17
           cache: 'gradle'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools cmake;4.1.2'
 
@@ -43,11 +40,11 @@ jobs:
             ./gradlew :app:calculateNativeCacheHash
 
       - name: Fetch JNI cache
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         id: jni-cache
         with:
           path: "app/prebuilt"
-          key: ${{ runner.os }}-trime-jni-release-${{ steps.cache-hash.outputs.native-cache-hash }}
+          key: ${{ runner.os }}-trime-jni-release-arm64-v8a-${{ steps.cache-hash.outputs.native-cache-hash }}
 
       - name: Setup Keystore
         run: |
@@ -65,9 +62,17 @@ jobs:
         if: ${{ !steps.jni-cache.outputs.cache-hit }}
         run: cp -R app/build/intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib app/prebuilt
 
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: trime-release-arm64-v8a
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
       - name: Build changelog
+        if: startsWith(github.ref, 'refs/tags/')
         id: build_changelog
-        uses: mikepenz/release-changelog-builder-action@v6
+        uses: mikepenz/release-changelog-builder-action@v5
         with:
           commitMode: true
           configurationJson: |
@@ -79,7 +84,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Stable release
-        uses: softprops/action-gh-release@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
           body: ${{ steps.build_changelog.outputs.changelog }}

@@ -14,8 +14,11 @@ import android.graphics.PorterDuffColorFilter
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.view.KeyEvent
+import android.view.inputmethod.ExtractedTextRequest
 import com.mikepenz.iconics.IconicsDrawable
 import com.mikepenz.iconics.utils.sizeDp
+import com.osfans.trime.core.RimeKeyMapping
+import com.osfans.trime.daemon.RimeDaemon
 import com.osfans.trime.data.theme.Theme
 import com.osfans.trime.ime.core.TrimeInputMethodService
 import com.osfans.trime.ime.popup.PopupAction
@@ -39,10 +42,22 @@ class KeyView(
     private val popup: PopupDelegate
         get() = keyboardView.popup
 
-    private val deletedTextBuffer = ArrayDeque<String>()
+    private var slideDeleteSession: SlideDeleteSession? = null
+    private var selectDeleteSession: SelectDeleteSession? = null
+
+    private class SlideDeleteSession(
+        val composing: Boolean,
+    ) {
+        val deletedTextBuffer = ArrayDeque<String>()
+    }
 
     private var keyPressed = false
     override fun isPressed(): Boolean = keyPressed
+
+    companion object {
+        private val RIME_BACKSPACE = RimeKeyMapping.keyCodeToVal(KeyEvent.KEYCODE_DEL)
+        private val RIME_DELETE = RimeKeyMapping.keyCodeToVal(KeyEvent.KEYCODE_FORWARD_DEL)
+    }
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
@@ -83,12 +98,21 @@ class KeyView(
         isRepeatable = key.click?.isRepeatable ?: false
         isSlideCursor = key.click?.isSlideCursor ?: false
         isSlideDelete = key.click?.isSlideDelete ?: false
+        isSelectDelete = key.click?.isSelectDelete ?: false
         hasLongPress = key.hasAction(KeyBehavior.LONG_CLICK)
         hasDouble = key.hasAction(KeyBehavior.DOUBLE_CLICK)
         hasLazyDouble = key.hasAction(KeyBehavior.LAZY_DOUBLE_CLICK)
         hasPopup = key.popup.isNotEmpty()
 
         onPress = {
+            val composing = RimeDaemon.getFirstSessionOrNull()?.run { statusCached.isComposing } == true
+            slideStepScale = if (isSlideCursor && composing) 2f else 1f
+            slideDeleteSession = if (isSlideDelete) SlideDeleteSession(composing) else null
+            selectDeleteSession = if (isSelectDelete) {
+                SelectDeleteSession(composing).also { initializeSelectDelete(it) }
+            } else {
+                null
+            }
             if (keyboard.firstPressedKeyIndex == -1) keyboard.firstPressedKeyIndex = id
             setPressedState(true)
             key.getCode(KeyBehavior.CLICK).let { keyboardActionListener.onPress(it) }
@@ -136,28 +160,15 @@ class KeyView(
         }
 
         onSlide = { delta, _, _ ->
-            if (isSlideCursor) {
-                when {
+            when {
+                isSlideCursor -> when {
                     delta > 0 -> keyboardActionListener.onAction(theme.resolveAction("Right"))
                     delta < 0 -> keyboardActionListener.onAction(theme.resolveAction("Left"))
                 }
-            } else if (isSlideDelete) {
-                val ic = service.currentInputConnection
-                when {
-                    delta < 0 -> {
-                        val beforeText = ic.getTextBeforeCursor(1, 0) ?: ""
-                        if (beforeText.isNotEmpty()) {
-                            deletedTextBuffer.addFirst(beforeText.toString())
-                            ic.deleteSurroundingText(1, 0)
-                        }
-                    }
 
-                    delta > 0 -> {
-                        if (deletedTextBuffer.isNotEmpty()) {
-                            ic.commitText(deletedTextBuffer.removeFirst(), 1)
-                        }
-                    }
-                }
+                isSelectDelete -> onSelectDeleteSlide(delta)
+
+                isSlideDelete -> onSlideDelete(delta)
             }
         }
 
@@ -181,9 +192,123 @@ class KeyView(
         }
 
         onCancel = {
-            deletedTextBuffer.clear()
+            slideDeleteSession = null
+            selectDeleteSession?.let { cancelSelectDelete(it) }
+            selectDeleteSession = null
             setPressedState(false)
             dismissPopupPreview()
+        }
+    }
+
+    private fun initializeSelectDelete(session: SelectDeleteSession) {
+        if (session.composing) {
+            service.postRimeJob {
+                session.initialize(getContext().caretPos)
+            }
+        } else {
+            val extracted = service.currentInputConnection?.getExtractedText(ExtractedTextRequest(), 0)
+            if (extracted != null) {
+                session.initialize(extracted.startOffset + extracted.selectionEnd)
+            }
+        }
+    }
+
+    private fun onSlideDelete(delta: Int) {
+        val session = slideDeleteSession ?: return
+        if (session.composing) {
+            if (delta == 0) return
+            service.postRimeJob {
+                var remaining = if (delta < 0) -delta.toLong() else delta.toLong()
+                while (remaining > 0) {
+                    if (delta < 0) {
+                        val context = getContext()
+                        if (context.caretPos <= 0 || context.caretPos > context.input.length) break
+                        val deleted = context.input[context.caretPos - 1].toString()
+                        if (!processKey(RIME_BACKSPACE, 0u, propagateUnhandled = false)) break
+                        session.deletedTextBuffer.addFirst(deleted)
+                    } else {
+                        val deleted = session.deletedTextBuffer.firstOrNull() ?: break
+                        if (!processKey(deleted[0].code, 0u, propagateUnhandled = false)) break
+                        session.deletedTextBuffer.removeFirst()
+                    }
+                    remaining--
+                }
+            }
+            return
+        }
+
+        val ic = service.currentInputConnection ?: return
+        when {
+            delta < 0 -> {
+                val beforeText = ic.getTextBeforeCursor(1, 0) ?: ""
+                if (beforeText.isNotEmpty()) {
+                    session.deletedTextBuffer.addFirst(beforeText.toString())
+                    ic.deleteSurroundingText(1, 0)
+                }
+            }
+
+            delta > 0 -> {
+                if (session.deletedTextBuffer.isNotEmpty()) {
+                    ic.commitText(session.deletedTextBuffer.removeFirst(), 1)
+                }
+            }
+        }
+    }
+
+    private fun onSelectDeleteSlide(delta: Int) {
+        val session = selectDeleteSession ?: return
+        if (delta == 0) {
+            session.finished = true
+            finishSelectDelete(session)
+            return
+        }
+        if (session.cancelled || session.finished) return
+        session.started = true
+
+        if (session.composing) {
+            service.postRimeJob {
+                if (session.cancelled) return@postRimeJob
+                val previous = session.current
+                val target = session.move(delta) ?: return@postRimeJob
+                if (target != previous) moveCursorPos(target)
+            }
+        } else {
+            val target = session.move(delta) ?: return
+            service.currentInputConnection?.setSelection(target, session.anchor)
+        }
+    }
+
+    private fun finishSelectDelete(session: SelectDeleteSession) {
+        if (session.composing) {
+            service.postRimeJob {
+                if (session.cancelled) return@postRimeJob
+                var remaining = session.anchor - session.current
+                while (remaining > 0) {
+                    val context = getContext()
+                    if (context.caretPos != session.current || session.current >= context.input.length) break
+                    if (!processKey(RIME_DELETE, 0u, propagateUnhandled = false)) break
+                    remaining--
+                }
+            }
+        } else if (session.started) {
+            val ic = service.currentInputConnection ?: return
+            if (session.current < session.anchor) {
+                ic.commitText("", 1)
+            } else {
+                ic.setSelection(session.anchor, session.anchor)
+            }
+        }
+    }
+
+    private fun cancelSelectDelete(session: SelectDeleteSession) {
+        if (session.finished || !session.started) return
+        session.cancelled = true
+        if (session.composing) {
+            service.postRimeJob {
+                if (session.anchor >= 0) moveCursorPos(session.anchor)
+            }
+        } else if (session.started) {
+            service.currentInputConnection?.setSelection(session.anchor, session.anchor)
         }
     }
 
