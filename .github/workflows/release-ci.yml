@@ -22,6 +22,10 @@ env:
   CI_NAME: Release CI
   # split only one ABI so the artifact stays small
   BUILD_ABI: arm64-v8a
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
