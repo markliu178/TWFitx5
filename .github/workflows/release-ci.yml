@@ -5,6 +5,16 @@
 name: Release
 on:
   workflow_dispatch:
+    inputs:
+      release_name:
+        description: 'Release 名称（留空则自动用 tag 名）'
+        required: false
+        default: ''
+      prerelease:
+        description: '标记为 Pre-release'
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -30,7 +40,7 @@ jobs:
           cache: 'gradle'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools cmake;4.1.2'
 
@@ -62,17 +72,48 @@ jobs:
         if: ${{ !steps.jni-cache.outputs.cache-hit }}
         run: cp -R app/build/intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib app/prebuilt
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: trime-release-arm64-v8a
+          name: trime-release-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
+      - name: Package source code
+        id: package-source
+        run: |
+          # 打包源码（含 submodule），排除不必要的构建产物
+          git archive --format=zip --output=source.zip HEAD
+          # 如果有 submodule，把它们也加进去
+          if [ -f .gitmodules ]; then
+            cat .gitmodules | grep 'path' | awk -F'= ' '{print $2}' | while read submod; do
+              if [ -d "$submod" ]; then
+                cd "$submod" && git archive --format=zip --prefix="$submod/" HEAD -o /tmp/submod.zip && cd ..
+                python3 -c "
+import zipfile, sys
+with zipfile.ZipFile('source.zip', 'a') as zf:
+    with zipfile.ZipFile('/tmp/submod.zip') as sf:
+        for item in sf.infolist():
+            data = sf.read(item.filename)
+            zf.writestr(item, data)
+                "
+              fi
+            done
+          fi
+          echo "source_zip=$(pwd)/source.zip" >> "$GITHUB_OUTPUT"
+          ls -lh source.zip
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trime-source
+          path: source.zip
+          if-no-files-found: error
+
       - name: Build changelog
-        if: startsWith(github.ref, 'refs/tags/')
         id: build_changelog
-        uses: mikepenz/release-changelog-builder-action@v6
+        uses: mikepenz/release-changelog-builder-action@v5
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           commitMode: true
           configurationJson: |
@@ -83,12 +124,33 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create Stable release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=continuous-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            NAME="${{ github.event.inputs.release_name }}"
+            if [ -z "$NAME" ]; then NAME="continuous-${GITHUB_SHA::7}"; fi
+            echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
-          body: ${{ steps.build_changelog.outputs.changelog }}
-          working_directory: "app/build/outputs/apk/release/"
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || github.event.inputs.prerelease == 'true' }}
+          body: |
+            ${{ steps.build_changelog.outputs.changelog }}
+            ---
+            **构建信息**
+            - Commit: \`${{ github.sha }}\`
+            - Runner: ${{ runner.os }}
           files: |
-            *.apk
+            app/build/outputs/apk/release/*.apk
+            source.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: false
