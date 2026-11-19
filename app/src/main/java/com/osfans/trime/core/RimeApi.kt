@@ -34,6 +34,7 @@ interface RimeApi {
         value: Int,
         modifiers: UInt = 0u,
         isVirtual: Boolean = true,
+        propagateUnhandled: Boolean = true,
     ): Boolean
 
     suspend fun processKey(
@@ -73,6 +74,8 @@ interface RimeApi {
     suspend fun clearComposition()
 
     suspend fun getRawInput(): String
+
+    suspend fun getContext(): ContextProto
 
     suspend fun setRuntimeOption(
         option: String,
