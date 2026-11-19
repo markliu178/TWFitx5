@@ -22,6 +22,7 @@ data class PresetKey(
     val repeatable: Boolean = false,
     val slideCursor: Boolean = false,
     val slideDelete: Boolean = false,
+    val selectDelete: Boolean = false,
     val functional: Boolean = false,
     @Serializable(with = LenientStringListSerializer::class)
     val states: List<String> = emptyList(),

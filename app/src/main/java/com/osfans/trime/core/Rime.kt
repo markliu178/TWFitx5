@@ -177,8 +177,9 @@ class Rime :
         value: Int,
         modifiers: UInt,
         isVirtual: Boolean,
+        propagateUnhandled: Boolean,
     ): Boolean = withRimeContext {
-        processKeyInner(value, modifiers.toInt(), isVirtual)
+        processKeyInner(value, modifiers.toInt(), isVirtual, propagateUnhandled)
     }
 
     override suspend fun processKey(
@@ -250,6 +251,10 @@ class Rime :
         getRimeRawInput()
     }
 
+    override suspend fun getContext(): ContextProto = withRimeContext {
+        getRimeContext()
+    }
+
     override suspend fun setRuntimeOption(
         option: String,
         value: Boolean,
@@ -298,11 +303,16 @@ class Rime :
         )
     }
 
-    private fun processKeyInner(value: Int, modifiers: Int, isVirtual: Boolean): Boolean {
+    private fun processKeyInner(
+        value: Int,
+        modifiers: Int,
+        isVirtual: Boolean,
+        propagateUnhandled: Boolean = true,
+    ): Boolean {
         lastAsciiTipsText = asciiTipsText(getRimeStatus())
         val handled = processRimeKey(value, modifiers)
         emitResponse()
-        if (!handled) {
+        if (!handled && propagateUnhandled) {
             handleRimeMessage(
                 10, // RimeMessage.MessageType.Key,
                 arrayOf(value, modifiers, isVirtual),

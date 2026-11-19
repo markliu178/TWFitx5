@@ -10,6 +10,8 @@ on:
       - 'v*'
 env:
   CI_NAME: Release CI
+  # split only one ABI so the artifact stays small
+  BUILD_ABI: arm64-v8a
 jobs:
   check:
     uses: ./.github/workflows/check-ci.yml
@@ -47,7 +49,7 @@ jobs:
         id: jni-cache
         with:
           path: "app/prebuilt"
-          key: ${{ runner.os }}-trime-jni-release-${{ steps.cache-hash.outputs.native-cache-hash }}
+          key: ${{ runner.os }}-trime-jni-release-arm64-v8a-${{ steps.cache-hash.outputs.native-cache-hash }}
 
       - name: Setup Keystore
         run: |
@@ -65,7 +67,15 @@ jobs:
         if: ${{ !steps.jni-cache.outputs.cache-hit }}
         run: cp -R app/build/intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib app/prebuilt
 
+      - name: Upload APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: trime-release-arm64-v8a
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
       - name: Build changelog
+        if: startsWith(github.ref, 'refs/tags/')
         id: build_changelog
         uses: mikepenz/release-changelog-builder-action@v6
         with:
@@ -79,6 +89,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Stable release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
