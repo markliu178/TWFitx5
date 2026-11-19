@@ -88,15 +88,14 @@ jobs:
           if [ -f .gitmodules ]; then
             cat .gitmodules | grep 'path' | awk -F'= ' '{print $2}' | while read submod; do
               if [ -d "$submod" ]; then
-                cd "$submod" && git archive --format=zip --prefix="$submod/" HEAD -o /tmp/submod.zip && cd ..
-                python3 -c "
-import zipfile, sys
-with zipfile.ZipFile('source.zip', 'a') as zf:
-    with zipfile.ZipFile('/tmp/submod.zip') as sf:
-        for item in sf.infolist():
-            data = sf.read(item.filename)
-            zf.writestr(item, data)
-                "
+                (cd "$submod" && git archive --format=zip --prefix="$submod/" HEAD -o /tmp/submod.zip)
+                python3 - << 'PYEOF'
+          import zipfile
+          with zipfile.ZipFile("source.zip", "a") as zf:
+              with zipfile.ZipFile("/tmp/submod.zip") as sf:
+                  for item in sf.infolist():
+                      zf.writestr(item, sf.read(item.filename))
+          PYEOF
               fi
             done
           fi
