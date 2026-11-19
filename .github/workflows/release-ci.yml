@@ -18,6 +18,7 @@ on:
   push:
     tags:
       - 'v*'
+
 env:
   CI_NAME: Release CI
   # split only one ABI so the artifact stays small
@@ -51,7 +52,7 @@ jobs:
       - name: Calculate JNI cache hash
         id: cache-hash
         run: |
-            ./gradlew :app:calculateNativeCacheHash
+          ./gradlew :app:calculateNativeCacheHash
 
       - name: Fetch JNI cache
         uses: actions/cache@v4
@@ -86,20 +87,18 @@ jobs:
       - name: Package source code
         id: package-source
         run: |
-          # 打包源码（含 submodule），排除不必要的构建产物
           git archive --format=zip --output=source.zip HEAD
-          # 如果有 submodule，把它们也加进去
           if [ -f .gitmodules ]; then
             cat .gitmodules | grep 'path' | awk -F'= ' '{print $2}' | while read submod; do
               if [ -d "$submod" ]; then
                 (cd "$submod" && git archive --format=zip --prefix="$submod/" HEAD -o /tmp/submod.zip)
-                python3 - << 'PYEOF'
+                python3 - <<'PY'
           import zipfile
           with zipfile.ZipFile("source.zip", "a") as zf:
               with zipfile.ZipFile("/tmp/submod.zip") as sf:
                   for item in sf.infolist():
                       zf.writestr(item, sf.read(item.filename))
-          PYEOF
+          PY
               fi
             done
           fi
